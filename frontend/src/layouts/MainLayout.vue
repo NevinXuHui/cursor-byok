@@ -1,17 +1,12 @@
 <script setup>
 import { Browser, Window } from "@wailsio/runtime";
 import LocaleSelect from "@/components/LocaleSelect.vue";
-import { showModal } from "@/composables/useModal";
-import {
-  getFooterAuthorInfo,
-  openFooterAuthorHome,
-} from "@/services/clientApi";
 import {
   appState,
   syncServiceState,
 } from "@/state/appState";
 import { isWindows } from "@/utils/isWindows";
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
 import Logo from "@/assets/logo.png";
 
@@ -20,8 +15,6 @@ const showIcon = computed(() => route.meta.showIcon !== false);
 const title = computed(() => route.meta.title ?? "Cursor助手｜永久免费｜自定义API");
 const directlyClose = computed(() => route.meta.directlyClose === true);
 const showFooter = computed(() => route.path === "/");
-const footerAuthorInfo = ref(null);
-const usageDocsURL = "https://docs.leokun.cn";
 let proxyStateTimer = null;
 const proxyStatePollIntervalMs = 10000;
 const netProxyEndpoint = computed(
@@ -66,54 +59,7 @@ async function closeWindow() {
   await Window.Hide();
 }
 
-async function loadFooterAuthorInfo() {
-  try {
-    footerAuthorInfo.value = await getFooterAuthorInfo();
-  } catch (error) {
-    console.error("[MainLayout] 加载作者信息失败", error);
-  }
-}
-
-async function showActionError(title, error) {
-  await showModal({
-    title,
-    content: String(error || "操作失败").trim() || "操作失败",
-    confirmText: "确定",
-    showCancel: false,
-  });
-}
-
-async function handleOpenAuthorHome() {
-  if (!footerAuthorInfo.value) {
-    return;
-  }
-  const confirmed = await showModal({
-    title: footerAuthorInfo.value.dialogTitle,
-    content: footerAuthorInfo.value.dialogContent,
-    confirmText: footerAuthorInfo.value.dialogConfirmText,
-    cancelText: footerAuthorInfo.value.dialogCancelText,
-    showCancel: true,
-  });
-  if (!confirmed) {
-    return;
-  }
-  try {
-    await openFooterAuthorHome();
-  } catch (error) {
-    await showActionError("打开主页失败", error);
-  }
-}
-
-async function handleOpenUsageDocs() {
-  try {
-    await Browser.OpenURL(usageDocsURL);
-  } catch (error) {
-    await showActionError("打开使用教程失败", error);
-  }
-}
-
 onMounted(() => {
-  void loadFooterAuthorInfo();
   proxyStateTimer = window.setInterval(() => {
     if (showFooter.value) {
       void syncServiceState().catch(() => {});
@@ -181,23 +127,6 @@ onUnmounted(() => {
         <span class="truncate">{{ proxyBadgeText }}</span>
       </div>
       <span v-if="footerVersionLabel" class="shrink-0">{{ footerVersionLabel }}</span>
-      <button
-        type="button"
-        class="center-row shrink-0 gap-[2px]  cursor-pointer rounded-[6px] px-[6px] py-[3px] transition-colors duration-150 hover:bg-[#1f1f1f] hover:text-[#e5e5e5]"
-        @click="handleOpenUsageDocs"
-      >
-        <span class="icon-[mdi--file-document-outline] text-[15px]"></span>
-        <span>使用教程</span>
-      </button>
-      <button
-        v-if="footerAuthorInfo"
-        type="button"
-        class="center-row shrink-0 gap-[6px] cursor-pointer rounded-[6px] px-[6px] py-[3px] transition-colors duration-150 hover:bg-[#1f1f1f] hover:text-[#e5e5e5]"
-        @click="handleOpenAuthorHome"
-      >
-        <span class="icon-[ant-design--bilibili-outlined] text-[14px]"></span>
-        <span>{{ footerAuthorInfo.buttonText }}</span>
-      </button>
       <div class="ml-auto flex shrink-0 items-center gap-[8px]">
         <LocaleSelect
           :border="false"
