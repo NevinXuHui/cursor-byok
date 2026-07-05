@@ -1,12 +1,9 @@
 import { computed, reactive, watchSyncEffect } from "vue";
 import { Events } from "@wailsio/runtime";
-import dayjs from "dayjs";
 import {
-  checkForUpdates,
   getAppVersion,
   getHomeMetricsSummary,
   getModelAdapterTestResults,
-  installReadyUpdate,
   getProxyState,
   openConfigWindow as openConfig,
   loadUserConfig,
@@ -39,10 +36,6 @@ const SUPPORTED_OPENAI_ENDPOINTS = new Set([OPENAI_ENDPOINT_RESPONSES, OPENAI_EN
 const SUPPORTED_ROUTE_MODES = new Set(["local", "upstream"]);
 const PROXY_STATE_EVENT = "proxy:state";
 const USER_CONFIG_CHANGED_EVENT = "user-config:changed";
-const UPDATE_STATE_EVENT = "update:state";
-const UPDATE_PROGRESS_EVENT = "update:progress";
-const UPDATE_READY_EVENT = "update:ready";
-const UPDATE_ERROR_EVENT = "update:error";
 const MODEL_ADAPTER_TEST_UPDATED_EVENT = "model-adapter-test:updated";
 const SUPPORTED_MODEL_ADAPTER_TEST_STATUSES = new Set(["idle", "running", "success", "error"]);
 const HOME_METRICS_MIN_LOADING_MS = 600;
@@ -112,18 +105,6 @@ function asNumber(value, fallback = 0) {
   }
   const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function formatReleaseDate(value) {
-  const text = asString(value);
-  if (!text) {
-    return "未知";
-  }
-  const parsed = dayjs(text);
-  if (!parsed.isValid()) {
-    return text;
-  }
-  return parsed.format("YYYY-MM-DD HH:mm");
 }
 
 function normalizeRouteMode(value, fallback = "local") {
@@ -697,120 +678,6 @@ function handleModelAdapterTestUpdatedEvent(event) {
   void refreshModelAdapterTestResults().catch(() => {});
 }
 
-function normalizeUpdateState(value) {
-  const text = asString(value).toLowerCase();
-  if (["idle", "checking", "downloading", "ready", "installing", "error"].includes(text)) {
-    return text;
-  }
-  return "idle";
-}
-
-function applyUpdateSnapshot(raw) {
-  const data = raw && typeof raw === "object" ? raw : {};
-  const nextState = normalizeUpdateState(data.state ?? appState.updateState);
-  appState.updateState = nextState;
-
-  const version = asString(data.version);
-  if (version) {
-    appState.updateVersion = version;
-  } else if (nextState === "idle") {
-    appState.updateVersion = "";
-  }
-
-  const releaseDate = asString(data.releaseDate);
-  if (releaseDate) {
-    appState.updateReleaseDate = releaseDate;
-  } else if (nextState === "idle") {
-    appState.updateReleaseDate = "";
-  }
-
-  if (typeof data.releaseNotes === "string") {
-    appState.updateReleaseNotes = data.releaseNotes.replace(/\r\n/g, "\n");
-  } else if (nextState === "idle") {
-    appState.updateReleaseNotes = "";
-  }
-
-  if (typeof data.error === "string") {
-    appState.updateError = data.error.trim();
-  } else if (nextState !== "error") {
-    appState.updateError = "";
-  }
-
-  if (typeof data.message === "string") {
-    appState.updateMessage = data.message.trim();
-  } else if (!data.prompt) {
-    appState.updateMessage = "";
-  }
-
-  if (typeof data.downloaded === "number") {
-    appState.updateProgressDownloaded = data.downloaded;
-  } else if (nextState !== "downloading") {
-    appState.updateProgressDownloaded = 0;
-  }
-
-  if (typeof data.total === "number") {
-    appState.updateProgressTotal = data.total;
-  } else if (nextState !== "downloading") {
-    appState.updateProgressTotal = 0;
-  }
-
-  if (typeof data.percentage === "number") {
-    appState.updateProgressPercent = Math.max(0, Math.min(100, data.percentage));
-  } else if (nextState !== "downloading") {
-    appState.updateProgressPercent = 0;
-  }
-}
-
-function openUpdatePrompt(kind, payload = {}) {
-  appState.updatePromptKind = asString(kind) || "idle";
-  appState.updatePromptVisible = true;
-  appState.updatePromptBusy = false;
-  if (typeof payload.message === "string") {
-    appState.updateMessage = payload.message.trim();
-  }
-  if (typeof payload.error === "string") {
-    appState.updateError = payload.error.trim();
-  }
-}
-
-function handleUpdateStateEvent(event) {
-  const data = event?.data && typeof event.data === "object" ? event.data : {};
-  applyUpdateSnapshot(data);
-  if (asBoolean(data.prompt)) {
-    openUpdatePrompt(asString(data.promptKind) || "idle", data);
-  }
-}
-
-function handleUpdateProgressEvent(event) {
-  const data = event?.data && typeof event.data === "object" ? event.data : {};
-  applyUpdateSnapshot({
-    ...data,
-    state: "downloading",
-  });
-}
-
-function handleUpdateReadyEvent(event) {
-  const data = event?.data && typeof event.data === "object" ? event.data : {};
-  applyUpdateSnapshot({
-    ...data,
-    state: "ready",
-  });
-  if (data.prompt !== false) {
-    openUpdatePrompt("ready", data);
-  }
-}
-
-function handleUpdateErrorEvent(event) {
-  const data = event?.data && typeof event.data === "object" ? event.data : {};
-  applyUpdateSnapshot({
-    ...data,
-    state: "error",
-  });
-  if (asBoolean(data.prompt)) {
-    openUpdatePrompt("error", data);
-  }
-}
-
 function extractErrorMessage(error) {
   if (typeof error === "string") {
     return error.trim();
@@ -855,19 +722,6 @@ export const appState = reactive({
   homeMetrics: createEmptyHomeMetrics(),
   homeMetricsLoading: false,
   homeMetricsError: "",
-
-  updateState: "idle",
-  updateVersion: "",
-  updateReleaseDate: "",
-  updateReleaseNotes: "",
-  updateProgressDownloaded: 0,
-  updateProgressTotal: 0,
-  updateProgressPercent: 0,
-  updateError: "",
-  updateMessage: "",
-  updatePromptVisible: false,
-  updatePromptKind: "idle",
-  updatePromptBusy: false,
 });
 
 watchSyncEffect(() => {
@@ -934,46 +788,6 @@ watchSyncEffect((onCleanup) => {
   });
 });
 
-watchSyncEffect((onCleanup) => {
-  if (typeof window === "undefined") {
-    return;
-  }
-  const unsubscribe = Events.On(UPDATE_STATE_EVENT, handleUpdateStateEvent);
-  onCleanup(() => {
-    unsubscribe();
-  });
-});
-
-watchSyncEffect((onCleanup) => {
-  if (typeof window === "undefined") {
-    return;
-  }
-  const unsubscribe = Events.On(UPDATE_PROGRESS_EVENT, handleUpdateProgressEvent);
-  onCleanup(() => {
-    unsubscribe();
-  });
-});
-
-watchSyncEffect((onCleanup) => {
-  if (typeof window === "undefined") {
-    return;
-  }
-  const unsubscribe = Events.On(UPDATE_READY_EVENT, handleUpdateReadyEvent);
-  onCleanup(() => {
-    unsubscribe();
-  });
-});
-
-watchSyncEffect((onCleanup) => {
-  if (typeof window === "undefined") {
-    return;
-  }
-  const unsubscribe = Events.On(UPDATE_ERROR_EVENT, handleUpdateErrorEvent);
-  onCleanup(() => {
-    unsubscribe();
-  });
-});
-
 export const appViewState = reactive({
   serviceStatusText: computed(() => {
     if (appState.proxyRunning && appState.backendRunning) {
@@ -993,48 +807,6 @@ export const appViewState = reactive({
     }
     return appState.serviceRunning ? "关闭服务" : "启动服务";
   }),
-});
-
-export const updateViewState = reactive({
-  footerDownloading: computed(() => appState.updateState === "downloading"),
-  footerBusy: computed(() => ["checking", "installing"].includes(appState.updateState)),
-  footerVersionLabel: computed(() => `v${appState.appVersion || "..."}`),
-  footerProgressText: computed(() => `${Math.round(appState.updateProgressPercent || 0)}%`),
-  footerProgressStyle: computed(() => ({
-    width: `${Math.max(0, Math.min(100, appState.updateProgressPercent || 0))}%`,
-  })),
-  promptTitle: computed(() => {
-    switch (appState.updatePromptKind) {
-      case "ready":
-        return "发现新版本";
-      case "error":
-        return "更新失败";
-      default:
-        return "检查更新";
-    }
-  }),
-  promptContent: computed(() => {
-    switch (appState.updatePromptKind) {
-      case "ready":
-        return [
-          `版本：v${appState.updateVersion || appState.appVersion || "..."}`,
-          `发布时间：${formatReleaseDate(appState.updateReleaseDate)}`,
-          "",
-          appState.updateReleaseNotes || "无更新说明",
-        ].join("\n");
-      case "error":
-        return appState.updateError || appState.updateMessage || GENERIC_SERVICE_ERROR;
-      default:
-        return appState.updateMessage || `当前已是最新版本（v${appState.appVersion || "..."}）。`;
-    }
-  }),
-  promptConfirmText: computed(() =>
-    appState.updatePromptKind === "ready" ? "立即重启更新" : "确定",
-  ),
-  promptCancelText: computed(() =>
-    appState.updatePromptKind === "ready" ? "稍后" : "取消",
-  ),
-  promptShowCancel: computed(() => appState.updatePromptKind === "ready"),
 });
 
 export function getModelAdapterTestResultByID(adapterID) {
@@ -1335,34 +1107,6 @@ export async function openModelConfigWindow() {
 export async function openModelEditorWindow(index, adapter) {
   const adapterJSON = JSON.stringify(normalizeModelAdapter(adapter));
   await openModelEditor(index, adapterJSON);
-}
-
-export async function checkForAppUpdates() {
-  await checkForUpdates();
-}
-
-export function dismissUpdatePrompt() {
-  appState.updatePromptVisible = false;
-  appState.updatePromptBusy = false;
-}
-
-export async function confirmUpdatePrompt() {
-  if (appState.updatePromptKind !== "ready") {
-    dismissUpdatePrompt();
-    return;
-  }
-  if (appState.updatePromptBusy) {
-    return;
-  }
-  appState.updatePromptBusy = true;
-  try {
-    await installReadyUpdate();
-  } catch (error) {
-    appState.updatePromptBusy = false;
-    const message = toUserError(error);
-    appState.updateError = message;
-    openUpdatePrompt("error", { error: message });
-  }
 }
 
 export function toUserError(error) {

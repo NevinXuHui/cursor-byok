@@ -1326,6 +1326,21 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		return service.failStream(stream, "unknown", err)
 	}
 	compiled = guardCompiledConversationForProvider(compiled)
+	stream.mu.Lock()
+	contextTooLongRetries := stream.ProviderContextTooLongRetries
+	stream.mu.Unlock()
+	compiled, trimResult := manageCompiledContextBeforeProvider(compiled, conversation, contextTooLongRetries > 0)
+	if trimResult.Trimmed {
+		service.debug.LogProvider(context.Background(), requestID, conversationID, "context_trim_applied", map[string]any{
+			"model_call_id":   strings.TrimSpace(modelCallID),
+			"provider_pass":   currentPass,
+			"tokens_freed":    trimResult.TokensFreed,
+			"snip_freed":      trimResult.SnipFreed,
+			"message_count":   len(compiled.Messages),
+			"estimated_after": estimateCompiledPromptTokens(compiled),
+			"aggressive":      contextTooLongRetries > 0,
+		})
+	}
 	if compacted, compactErr := service.maybeCompactBeforeProvider(stream, conversation, compiled); compactErr != nil {
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", compactErr)
@@ -1353,6 +1368,24 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 			service.setTurnPhase(stream, TurnPhaseIdle)
 		}
 		return nil
+	}
+	budgetTokens := effectiveCompiledContextWindow(conversation) - int64(contextAutoCompactBufferTokens)
+	if budgetTokens < 4_000 {
+		budgetTokens = 4_000
+	}
+	if estimateCompiledPromptTokens(compiled) > budgetTokens {
+		compiled, extraTrim := manageCompiledContextBeforeProvider(compiled, conversation, true)
+		if extraTrim.Trimmed {
+			service.debug.LogProvider(context.Background(), requestID, conversationID, "context_trim_final", map[string]any{
+				"model_call_id":   strings.TrimSpace(modelCallID),
+				"provider_pass":   currentPass,
+				"tokens_freed":    extraTrim.TokensFreed,
+				"snip_freed":      extraTrim.SnipFreed,
+				"message_count":   len(compiled.Messages),
+				"estimated_after": estimateCompiledPromptTokens(compiled),
+				"budget_tokens":   budgetTokens,
+			})
+		}
 	}
 	if err := service.syncSummarySnapshot(stream, conversation, requestID, modelCallID); err != nil {
 		service.setTurnPhase(stream, TurnPhaseFailed)
@@ -1386,6 +1419,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		ArtifactPaths:      &modeladapter.LLMArtifactPaths{},
 	}
 	providerRequest.ThinkingEffort = thinkingEffort
+	effectiveWindow := effectiveCompiledContextWindow(conversation)
 	service.debug.LogProvider(context.Background(), requestID, conversationID, "provider_request_prepared", map[string]any{
 		"model_call_id":          strings.TrimSpace(modelCallID),
 		"provider_pass":          currentPass,
@@ -1398,6 +1432,9 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 		"message_count":          len(compiled.Messages),
 		"tool_count":             len(compiled.Tools),
 		"compile_summary_length": len(compiled.CompileSummary),
+		"estimated_prompt_tokens": estimateCompiledPromptTokens(compiled),
+		"effective_context_window": effectiveWindow,
+		"context_usage_percent":    contextUsagePercent(estimateCompiledPromptTokens(compiled), effectiveWindow),
 	})
 	go service.runProviderStream(stream, currentToken, ctx, providerRequest)
 	return nil
@@ -1406,6 +1443,7 @@ func (service *Service) driveProvider(stream *ActiveStream) error {
 func (service *Service) resolveProviderOutputBudget(modelID string, conversation *ConversationFile, compiled CompiledConversation) (int, map[string]any) {
 	configuredMaxTokens := service.resolveConfiguredProviderMaxOutputTokens(modelID)
 	contextWindowTokens := compactionContextWindowSize(conversation)
+	effectiveWindowTokens := effectiveCompiledContextWindow(conversation)
 	estimatedPromptTokens := estimateCompiledPromptTokens(compiled)
 	if conversation != nil && int64(conversation.TokenDetailsUsedTokens) > estimatedPromptTokens {
 		estimatedPromptTokens = int64(conversation.TokenDetailsUsedTokens)
@@ -1415,8 +1453,8 @@ func (service *Service) resolveProviderOutputBudget(modelID string, conversation
 	if requestMaxTokens <= 0 {
 		requestMaxTokens = providerDefaultMaxOutputTokens
 	}
-	if contextWindowTokens > 0 && estimatedPromptTokens > 0 {
-		remainingTokens = contextWindowTokens - estimatedPromptTokens
+	if effectiveWindowTokens > 0 && estimatedPromptTokens > 0 {
+		remainingTokens = effectiveWindowTokens - estimatedPromptTokens
 		allowedTokens := remainingTokens - providerOutputSafetyTokens
 		if allowedTokens < 1 {
 			allowedTokens = 1
@@ -1434,6 +1472,7 @@ func (service *Service) resolveProviderOutputBudget(modelID string, conversation
 		"dynamic_max_tokens":                maxTokens,
 		"compiled_prompt_tokens_estimate":   estimatedPromptTokens,
 		"context_window_tokens":             contextWindowTokens,
+		"effective_context_window_tokens":   effectiveWindowTokens,
 		"remaining_context_tokens_estimate": remainingTokens,
 		"provider_output_safety_tokens":     providerOutputSafetyTokens,
 	}

@@ -675,6 +675,7 @@ func mergeConversationMetadata(target *ConversationFile, source *ConversationFil
 	target.AutoCompactionReserveTokens = source.AutoCompactionReserveTokens
 	target.AutoCompactionTriggeredAt = source.AutoCompactionTriggeredAt
 	target.AutoCompactionSourceModelCallID = source.AutoCompactionSourceModelCallID
+	target.AutoCompactionConsecutiveFailures = source.AutoCompactionConsecutiveFailures
 	target.CurrentPlanText = source.CurrentPlanText
 	target.CurrentPlans = clonePlanRegistryEntries(source.CurrentPlans)
 	target.CurrentTodos = cloneTodoItems(source.CurrentTodos)

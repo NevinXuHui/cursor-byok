@@ -178,33 +178,6 @@ tasks:
     cmds:
       - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}
 
-  ads:install:
-    summary: 安装广告页依赖
-    dir: '{{.TASKFILE_DIR}}/ads-page'
-    sources:
-      - package.json
-      - yarn.lock
-    generates:
-      - node_modules
-    cmds:
-      - yarn install --frozen-lockfile
-
-  ads:dev:
-    summary: 启动广告页开发服务（http://127.0.0.1:5174/ad/）
-    dir: '{{.TASKFILE_DIR}}/ads-page'
-    deps:
-      - task: ads:install
-    cmds:
-      - yarn dev
-
-  ads:build:
-    summary: 构建广告 ZIP 产物
-    dir: '{{.TASKFILE_DIR}}/ads-page'
-    deps:
-      - task: ads:install
-    cmds:
-      - yarn build
-
   setup:docker:
     summary: 构建 Linux 交叉编译 Docker 镜像
     cmds:

@@ -1,6 +1,7 @@
 package forwarder
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -721,6 +722,27 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 	}
 	if payload.Err != nil {
 		var providerErr providerTerminalError
+		if errors.As(payload.Err, &providerErr) && isContextTooLong(providerErr.Unwrap()) {
+			stream.mu.Lock()
+			retries := stream.ProviderContextTooLongRetries
+			stream.mu.Unlock()
+			if retries < contextMaxTooLongRetries {
+				stream.mu.Lock()
+				stream.ProviderContextTooLongRetries = retries + 1
+				stream.ProviderActive = false
+				stream.ProviderCancel = nil
+				stream.PendingProviderAction = providerActionStart
+				stream.UpdatedAt = time.Now().UTC()
+				stream.mu.Unlock()
+				service.debug.LogProvider(context.Background(), requestID, conversationID, "context_too_long_retry", map[string]any{
+					"model_call_id": strings.TrimSpace(modelCallID),
+					"retry":         retries + 1,
+					"max_retries":   contextMaxTooLongRetries,
+					"error":         providerErr.Error(),
+				})
+				return service.requestProviderAction(stream, providerActionStart)
+			}
+		}
 		if errors.As(payload.Err, &providerErr) {
 			service.setTurnPhase(stream, TurnPhaseFailed)
 			return service.closeStreamWithProviderError(stream, conversationID, turnSeq, requestID, accumulatedText, accumulatedReasoning, accumulatedReasoningSignature, accumulatedReasoningSignatureSource, accumulatedReasoningItemID, accumulatedReasoningStatus, accumulatedReasoningSummary, usage, providerErr, !hadToolInvocation)
@@ -728,6 +750,9 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", payload.Err)
 	}
+	stream.mu.Lock()
+	stream.ProviderContextTooLongRetries = 0
+	stream.mu.Unlock()
 	if err := service.flushAssistantText(stream, conversationID, turnSeq, requestID, accumulatedText, accumulatedReasoning, accumulatedReasoningSignature, accumulatedReasoningSignatureSource, accumulatedReasoningItemID, accumulatedReasoningStatus, accumulatedReasoningSummary, !hadToolInvocation); err != nil {
 		return service.failStreamIfNonTerminal(stream, "unknown", err)
 	}

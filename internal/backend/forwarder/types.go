@@ -34,7 +34,8 @@ type ConversationFile struct {
 	AutoCompactionPromptTokens      int64                                 `json:"auto_compaction_prompt_tokens,omitempty"`
 	AutoCompactionReserveTokens     int64                                 `json:"auto_compaction_reserve_tokens,omitempty"`
 	AutoCompactionTriggeredAt       string                                `json:"auto_compaction_triggered_at,omitempty"`
-	AutoCompactionSourceModelCallID string                                `json:"auto_compaction_source_model_call_id,omitempty"`
+	AutoCompactionSourceModelCallID         string `json:"auto_compaction_source_model_call_id,omitempty"`
+	AutoCompactionConsecutiveFailures       int    `json:"auto_compaction_consecutive_failures,omitempty"`
 	CurrentPlanText                 string                                `json:"current_plan_text,omitempty"`
 	CurrentPlans                    map[string]*agentv1.PlanRegistryEntry `json:"current_plans,omitempty"`
 	CurrentTodos                    []*agentv1.TodoItem                   `json:"current_todos,omitempty"`
@@ -156,6 +157,7 @@ type ActiveStream struct {
 	ProviderUsage                               turnUsageSnapshot
 	ProviderTerminalToolInvocation              bool
 	PendingCompaction                           *PendingCompaction
+	ProviderContextTooLongRetries               int
 
 	Backlog                     []StreamEvent
 	Subscribers                 map[string]*StreamSubscriber

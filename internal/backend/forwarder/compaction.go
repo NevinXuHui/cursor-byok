@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	compactionAutoReserveTokens      = 10000
-	compactionTriggerRemainingTokens = 8192
+	compactionAutoReserveTokens      = contextAutoCompactBufferTokens
+	compactionTriggerRemainingTokens = contextAutoCompactBufferTokens
 	compactionPreferredTailTurns     = 4
 	compactionMinimumTailTurns       = 1
 	compactionReserveFloorTokens     = 8192
@@ -78,6 +78,9 @@ func (service *Service) maybeCompactBeforeProvider(stream *ActiveStream, convers
 		return false, nil
 	}
 	manualInstruction, manual := parseManualCompactionDirective(stream.LatestUserText)
+	if !manual && autoCompactionCircuitOpen(conversation) {
+		return false, nil
+	}
 	plan, err := service.buildCompactionPlan(stream, conversation, compiled, manual, manualInstruction)
 	if err != nil {
 		return false, err
@@ -155,6 +158,7 @@ func (service *Service) buildAutoCompactionPlan(stream *ActiveStream, conversati
 		reserveTokens = compactionAutoReserveTokens
 	}
 	budgetTokens := contextWindowSize - reserveTokens
+	effectiveWindow := effectiveCompiledContextWindow(conversation)
 	preflightExceeded := estimatedCompiledTokens > 0 && estimatedCompiledTokens > budgetTokens
 	contextTokens := maxPositiveInt64(
 		conversation.AutoCompactionPromptTokens,
@@ -162,7 +166,8 @@ func (service *Service) buildAutoCompactionPlan(stream *ActiveStream, conversati
 		int64(conversation.TokenDetailsUsedTokens),
 	)
 	pendingExceeded := conversation.AutoCompactionPending && contextTokens > 0 && contextTokens > budgetTokens
-	if !pendingExceeded && !preflightExceeded {
+	thresholdExceeded := shouldAutoCompactByEstimate(estimatedCompiledTokens, effectiveWindow, 0)
+	if !pendingExceeded && !preflightExceeded && !thresholdExceeded {
 		return nil, nil
 	}
 	usagePercent := 0.0
@@ -191,9 +196,10 @@ func (service *Service) buildAutoCompactionPlan(stream *ActiveStream, conversati
 		return nil, compactionTerminalError{
 			code: compactionOverflowTerminalCode,
 			message: fmt.Sprintf(
-				"compiled prompt exceeds context budget before provider request (estimated=%d budget=%d)",
+				"compiled prompt exceeds context budget before provider request (estimated=%d budget=%d effective=%d)",
 				estimatedCompiledTokens,
 				budgetTokens,
+				effectiveWindow,
 			),
 		}
 	}
@@ -415,8 +421,24 @@ func (service *Service) handleCompactionEvent(stream *ActiveStream, payload *str
 		}); err != nil {
 			return err
 		}
-		service.setTurnPhase(stream, TurnPhaseFailed)
-		return service.failStream(stream, "unknown", payload.Err)
+		_, err := service.updateConversationMetaAndCheckpoint(stream, stream.ConversationID, func(item *ConversationFile) error {
+			recordAutoCompactionFailure(item)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if payload.Plan != nil && payload.Plan.Trigger == "manual" {
+			service.setTurnPhase(stream, TurnPhaseFailed)
+			return service.failStream(stream, "unknown", payload.Err)
+		}
+		if err := service.publishSummaryCompleted(stream, "Context compaction failed; continuing with trimmed prompt."); err != nil {
+			return err
+		}
+		stream.mu.Lock()
+		stream.ProviderContextTooLongRetries++
+		stream.mu.Unlock()
+		return service.requestProviderAction(stream, providerActionStart)
 	}
 	if payload.Plan == nil {
 		return fmt.Errorf("pending compaction plan is missing")
@@ -590,6 +612,7 @@ func (service *Service) applyCompactionPlan(stream *ActiveStream, conversationID
 			}
 			item.TokenDetailsUsedTokens = 0
 			clearConversationAutoCompactionState(item)
+			recordAutoCompactionSuccess(item)
 			return nil
 		})
 		if err != nil {
@@ -611,6 +634,7 @@ func (service *Service) applyCompactionPlan(stream *ActiveStream, conversationID
 		appendEntriesInPlace(item, resetEntrySequences(replacementEntries))
 		item.TokenDetailsUsedTokens = 0
 		clearConversationAutoCompactionState(item)
+		recordAutoCompactionSuccess(item)
 		return nil
 	})
 	return err
@@ -1593,16 +1617,49 @@ func (service *Service) generateCompactionSummary(ctx context.Context, stream *A
 	if service == nil || stream == nil || plan == nil {
 		return "", nil
 	}
-	messages, err := service.buildCompactionSummaryMessages(plan)
+	baseMessages, err := service.buildCompactionSummaryMessages(plan)
 	if err != nil {
 		return "", err
 	}
-	if len(messages) == 0 {
+	if len(baseMessages) == 0 {
 		return "", nil
 	}
+	userIndex := -1
+	for i, message := range baseMessages {
+		if strings.TrimSpace(message.Role) == "user" {
+			userIndex = i
+			break
+		}
+	}
+	if userIndex < 0 {
+		return "", fmt.Errorf("compaction summary request is missing user content")
+	}
+	summaryInput := stripImagesFromCompactionText(strings.TrimSpace(baseMessages[userIndex].Content))
+	var lastErr error
+	for attempt := 0; attempt <= contextMaxPTLRetries; attempt++ {
+		messages := append([]modeladapter.Message(nil), baseMessages...)
+		messages[userIndex].Content = summaryInput
+		summary, streamErr := service.runCompactionSummaryStream(ctx, stream, plan, modelCallID, messages)
+		if streamErr == nil {
+			return summary, nil
+		}
+		lastErr = streamErr
+		if !isPromptTooLong(streamErr) || attempt >= contextMaxPTLRetries {
+			break
+		}
+		nextInput, ok := peelCompactionSummaryInputForPTL(summaryInput)
+		if !ok {
+			break
+		}
+		summaryInput = nextInput
+	}
+	return "", lastErr
+}
+
+func (service *Service) runCompactionSummaryStream(ctx context.Context, stream *ActiveStream, plan *PendingCompaction, modelCallID string, messages []modeladapter.Message) (string, error) {
 	accumulated := ""
 	usage := turnUsageSnapshot{}
-	err = service.provider.StartStream(ctx, ProviderRequest{
+	err := service.provider.StartStream(ctx, ProviderRequest{
 		RequestID:      stream.RequestID,
 		ConversationID: stream.ConversationID,
 		RunID:          stream.RequestID,

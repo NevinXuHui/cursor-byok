@@ -284,15 +284,15 @@ func updateConversationAutoCompactionState(conversation *ConversationFile, promp
 		clearConversationAutoCompactionState(conversation)
 		return
 	}
-	contextWindowTokens := int64(conversation.TokenDetailsMaxTokens)
-	if contextWindowTokens <= 0 {
-		contextWindowTokens = projectedConversationMaxTokens
-	}
+	effectiveWindow := effectiveCompiledContextWindow(conversation)
 	if reserveTokens <= 0 {
 		reserveTokens = compactionAutoReserveTokens
 	}
-	remainingTokens := contextWindowTokens - promptTokensTotal
-	if remainingTokens > reserveTokens {
+	threshold := effectiveWindow - int64(contextAutoCompactBufferTokens)
+	if threshold < effectiveWindow/2 {
+		threshold = effectiveWindow / 2
+	}
+	if threshold <= 0 || promptTokensTotal < threshold {
 		clearConversationAutoCompactionState(conversation)
 		return
 	}

@@ -3,7 +3,6 @@ package bridge
 import (
 	"cursor/internal/buildinfo"
 	"cursor/internal/client"
-	"cursor/internal/updater"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,7 +23,6 @@ type modelEditorContext struct {
 // WindowService 定义了当前模块中的 WindowService 类型。
 type WindowService struct {
 	app               *application.App
-	updater           *updater.Manager
 	modelConfigWindow *application.WebviewWindow
 	modelEditorWindow *application.WebviewWindow
 	editorCtx         *modelEditorContext
@@ -43,38 +41,9 @@ func (s *WindowService) SetApp(app *application.App) {
 	s.app = app
 }
 
-// SetUpdater 关联更新管理器，供前端手动触发检查更新。
-func (s *WindowService) SetUpdater(manager *updater.Manager) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.updater = manager
-}
-
 // GetAppVersion 返回当前应用版本号。
 func (s *WindowService) GetAppVersion() string {
 	return buildinfo.CurrentVersion()
-}
-
-// CheckForUpdates 触发一次手动检查更新。
-func (s *WindowService) CheckForUpdates() {
-	s.mu.RLock()
-	manager := s.updater
-	s.mu.RUnlock()
-	if manager == nil {
-		return
-	}
-	manager.CheckNow(true)
-}
-
-// InstallReadyUpdate 安装当前已下载完成的更新。
-func (s *WindowService) InstallReadyUpdate() error {
-	s.mu.RLock()
-	manager := s.updater
-	s.mu.RUnlock()
-	if manager == nil {
-		return fmt.Errorf("更新管理器未初始化")
-	}
-	return manager.InstallReadyUpdate()
 }
 
 // OpenConfigWindow 打开本地设置目录。

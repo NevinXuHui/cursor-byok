@@ -1,7 +1,6 @@
 <script setup>
 import { Browser, Window } from "@wailsio/runtime";
 import LocaleSelect from "@/components/LocaleSelect.vue";
-import { useMessage } from "@/composables/useMessage";
 import { showModal } from "@/composables/useModal";
 import {
   getFooterAuthorInfo,
@@ -9,9 +8,7 @@ import {
 } from "@/services/clientApi";
 import {
   appState,
-  checkForAppUpdates,
   syncServiceState,
-  updateViewState,
 } from "@/state/appState";
 import { isWindows } from "@/utils/isWindows";
 import { computed, onMounted, onUnmounted, ref } from "vue";
@@ -19,7 +16,6 @@ import { useRoute } from "vue-router";
 import Logo from "@/assets/logo.png";
 
 const route = useRoute();
-const message = useMessage();
 const showIcon = computed(() => route.meta.showIcon !== false);
 const title = computed(() => route.meta.title ?? "Cursor助手｜永久免费｜自定义API");
 const directlyClose = computed(() => route.meta.directlyClose === true);
@@ -53,6 +49,9 @@ const proxyBadgeTitle = computed(() => {
   }
   return "当前出站请求未使用系统代理";
 });
+const footerVersionLabel = computed(() =>
+  appState.appVersion ? `v${appState.appVersion}` : "",
+);
 
 async function minimizeWindow() {
   await Window.Minimise();
@@ -63,29 +62,8 @@ async function closeWindow() {
     await Window.Close();
     return;
   }
-  // const confirmed = await showModal({
-  //   title: "确认关闭",
-  //   content: "程序将会最小化到托盘，彻底关闭请在托盘退出，关闭后无法使用Cursor",
-  // });
-  // if (!confirmed) {
-  //   return;
-  // }
   await new Promise((resolve) => setTimeout(resolve, 200));
   await Window.Hide();
-}
-
-async function handleCheckForUpdates() {
-  if (updateViewState.footerBusy || updateViewState.footerDownloading) {
-    return;
-  }
-  const loadingMessageID = message.loading("检查更新中...");
-  try {
-    await checkForAppUpdates();
-  } finally {
-    if (loadingMessageID) {
-      message.remove(loadingMessageID);
-    }
-  }
 }
 
 async function loadFooterAuthorInfo() {
@@ -202,16 +180,7 @@ onUnmounted(() => {
         <span class="icon-[mdi--wifi] text-[15px]"></span>
         <span class="truncate">{{ proxyBadgeText }}</span>
       </div>
-      <button
-        v-if="!updateViewState.footerDownloading"
-        type="button"
-        class="center-row shrink-0 gap-[6px] cursor-pointer rounded-[6px] px-[6px] py-[3px] transition-colors duration-150 hover:bg-[#1f1f1f] hover:text-[#e5e5e5]"
-        :disabled="updateViewState.footerBusy"
-        @click="handleCheckForUpdates"
-      >
-        <span>{{ updateViewState.footerVersionLabel }}</span>
-        <span>检查更新</span>
-      </button>
+      <span v-if="footerVersionLabel" class="shrink-0">{{ footerVersionLabel }}</span>
       <button
         type="button"
         class="center-row shrink-0 gap-[2px]  cursor-pointer rounded-[6px] px-[6px] py-[3px] transition-colors duration-150 hover:bg-[#1f1f1f] hover:text-[#e5e5e5]"
@@ -229,25 +198,6 @@ onUnmounted(() => {
         <span class="icon-[ant-design--bilibili-outlined] text-[14px]"></span>
         <span>{{ footerAuthorInfo.buttonText }}</span>
       </button>
-      <div
-        v-if="updateViewState.footerDownloading"
-        class="flex min-w-0 flex-1 items-center gap-[10px]"
-      >
-        <span class="shrink-0">{{ updateViewState.footerVersionLabel }}</span>
-        <div class="center-row min-w-0 gap-[8px]">
-          <div
-            class="h-[6px] w-[120px] overflow-hidden rounded-full bg-[#1f1f1f]"
-          >
-            <div
-              class="h-full rounded-full bg-gradient-to-r from-[#10AD5D] to-[#29c776]"
-              :style="updateViewState.footerProgressStyle"
-            ></div>
-          </div>
-          <span class="shrink-0 text-[#d4d4d4]">{{
-            updateViewState.footerProgressText
-          }}</span>
-        </div>
-      </div>
       <div class="ml-auto flex shrink-0 items-center gap-[8px]">
         <LocaleSelect
           :border="false"

@@ -238,6 +238,7 @@ func applyRunRewindConversationState(conversation *ConversationFile, intent Inbo
 		conversation.TokenDetailsMaxTokens = projectedConversationMaxTokens
 	}
 	clearConversationAutoCompactionState(conversation)
+	conversation.AutoCompactionConsecutiveFailures = 0
 	conversation.LatestRequestPrefix = nil
 	conversation.LastProviderCall = nil
 	conversation.CurrentLoopID = fmt.Sprintf("%d:%s", turnSeq, strings.TrimSpace(intent.RequestID))
