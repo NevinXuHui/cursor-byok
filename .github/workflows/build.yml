@@ -1,0 +1,202 @@
+name: Build Multi-Platform
+
+on:
+  push:
+    tags:
+      - 'v*'  # 推送 tag 时自动构建发布
+    branches:
+      - main  # main 分支推送时构建（不发布）
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:  # 支持手动触发
+    inputs:
+      release:
+        description: '是否创建 GitHub Release'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  # macOS 构建任务（包含 macOS 和 Windows）
+  build-macos-windows:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Install Task
+        run: |
+          brew install go-task/tap/go-task
+
+      - name: Build All (macOS + Windows)
+        run: task build:all
+
+      - name: Upload macOS arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: bin/macos-arm64.dmg
+          if-no-files-found: error
+
+      - name: Upload macOS amd64
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-intel
+          path: bin/macos-intel.dmg
+          if-no-files-found: error
+
+      - name: Upload Windows 32-bit
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-32
+          path: bin/windows-32.zip
+          if-no-files-found: error
+
+      - name: Upload Windows 64-bit
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-64
+          path: bin/windows-64.zip
+          if-no-files-found: error
+
+  # Linux 构建任务
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.0-dev \
+            build-essential
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Install Task
+        run: |
+          sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+      - name: Build Linux amd64
+        run: task build:linux:amd64
+
+      - name: Upload Linux amd64
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64
+          path: bin/linux-amd64.tar.gz
+          if-no-files-found: error
+
+  # 发布任务（仅在 tag 推送或手动触发且选择发布时执行）
+  release:
+    needs: [build-macos-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: |
+      startsWith(github.ref, 'refs/tags/v') || 
+      (github.event_name == 'workflow_dispatch' && inputs.release == true)
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release directory
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec mv {} release/ \;
+          ls -lh release/
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=$(date +%Y%m%d-%H%M%S)
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          if [ -f "release-notes.md" ]; then
+            cat release-notes.md > release_body.md
+          else
+            cat > release_body.md << 'EOF'
+          ## Cursor BYOK 自动构建
+
+          ### 下载说明
+          - **macOS arm64**: 适用于 Apple Silicon (M1/M2/M3) Mac
+          - **macOS amd64**: 适用于 Intel Mac
+          - **Windows 64-bit**: 适用于 64 位 Windows 系统
+          - **Windows 32-bit**: 适用于 32 位 Windows 系统
+          - **Linux amd64**: 适用于 64 位 Linux 系统
+
+          ### 构建信息
+          - 提交: ${{ github.sha }}
+          - 构建时间: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          EOF
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.tag }}
+          body_path: release_body.md
+          draft: false
+          prerelease: false
+          files: |
+            release/*.dmg
+            release/*.zip
+            release/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

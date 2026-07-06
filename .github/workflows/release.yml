@@ -1,0 +1,87 @@
+name: Release
+
+# 专门用于正式发布的工作流，使用项目内置的 release 脚本
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # 仅响应语义化版本 tag (如 v1.0.0)
+  workflow_dispatch:  # 支持手动触发
+    inputs:
+      version:
+        description: '版本号（留空则自动从 build/config.yml 读取）'
+        required: false
+        type: string
+
+jobs:
+  # 使用 macOS 进行完整构建（macOS + Windows + Linux）
+  prepare-release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Install Task
+        run: brew install go-task/tap/go-task
+
+      - name: Install GitHub CLI
+        run: brew install gh
+
+      - name: Authenticate GitHub CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | gh auth login --with-token
+
+      - name: Prepare release notes
+        run: |
+          if [ ! -f "release-notes.md" ]; then
+            cat > release-notes.md << 'EOF'
+          ## Cursor BYOK Release
+
+          本次发布包含以下平台支持：
+          - macOS (Apple Silicon)
+          - macOS (Intel)
+          - Windows (64-bit)
+          - Linux (64-bit)
+
+          详细更新内容请查看 commit 历史。
+          EOF
+          fi
+
+      - name: Build and release (macOS + Windows + Linux)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 执行完整的发布流程
+          task release:prepare:darwin
+          task release:github
+
+      - name: Upload release artifacts (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: bin/release/**/*
+          retention-days: 30
